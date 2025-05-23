@@ -98,9 +98,6 @@ class PointAssigner(BaseAssigner):
             lvl_idx = gt_lvl == points_lvl
             points_index = points_range[lvl_idx]
 
-            # print(f'[DEBUG] GT #{idx}: assigned level={gt_lvl},'
-            # f'matched point candidates={len(points_index)}')
-
             lvl_points = points_xy[lvl_idx, :]
             gt_point = gt_bboxes_xy[[idx], :]
             gt_wh = gt_bboxes_wh[[idx], :]
@@ -125,10 +122,24 @@ class PointAssigner(BaseAssigner):
         # print(f"  max_overlaps: None")
         # print(f"  labels: {assigned_labels}")
 
-        dummy_overlaps = pred_instances.priors.new_zeros((num_points,))
+        # Compute normalized inverse distances as pseudo-overlaps
+        norm_dist = assigned_gt_dist.clone()
+        norm_dist[norm_dist == float('inf')] = -1  # Mark unassigned
+
+        if (norm_dist >= 0).sum() > 0:
+            max_dist = norm_dist[norm_dist >= 0].max()
+            if max_dist > 0:
+                norm_dist[norm_dist >= 0] = 1 - (norm_dist[norm_dist >= 0] / max_dist)
+            else:
+                norm_dist[:] = 0  # Avoid divide-by-zero
+        else:
+            norm_dist[:] = 0
+
+        # Clip for safety
+        norm_dist[norm_dist < 0] = 0
 
         return AssignResult(
             num_gts=num_gts,
             gt_inds=assigned_gt_inds,
-            max_overlaps=dummy_overlaps,
+            max_overlaps=norm_dist,
             labels=assigned_labels)
