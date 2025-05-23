@@ -80,5 +80,6 @@ class RepPointsRPNHead(RepPointsHead):
             proposal_list = None
         return dict(
             loss_rpn_cls=losses['loss_cls'],
-            loss_rpn_bbox=losses['loss_bbox']
+            loss_rpn_bbox_init=losses['loss_bbox_init'],
+            loss_rpn_bbox_refine=losses['loss_bbox_refine']
         ), proposal_list
