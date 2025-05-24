@@ -115,11 +115,9 @@ class BaseDenseHead(BaseModule, metaclass=ABCMeta):
         outs = self(x)
 
         outputs = unpack_gt_instances(batch_data_samples)
-        (batch_gt_instances, batch_gt_instances_ignore,
-         batch_img_metas) = outputs
+        (batch_gt_instances, batch_img_metas, batch_gt_instances_ignore) = outputs
 
-        loss_inputs = outs + (batch_gt_instances, batch_img_metas,
-                              batch_gt_instances_ignore)
+        loss_inputs = outs + (batch_gt_instances, batch_img_metas, batch_gt_instances_ignore)
         losses = self.loss_by_feat(*loss_inputs)
         return losses
 
@@ -154,14 +152,11 @@ class BaseDenseHead(BaseModule, metaclass=ABCMeta):
                 - predictions (list[:obj:`InstanceData`]): Detection
                   results of each image after the post process.
         """
-        outputs = unpack_gt_instances(batch_data_samples)
-        (batch_gt_instances, batch_gt_instances_ignore,
-         batch_img_metas) = outputs
+        batch_gt_instances, batch_img_metas, batch_gt_instances_ignore = unpack_gt_instances(batch_data_samples)
 
         outs = self(x)
 
-        loss_inputs = outs + (batch_gt_instances, batch_img_metas,
-                              batch_gt_instances_ignore)
+        loss_inputs = outs + (batch_gt_instances, batch_img_metas, batch_gt_instances_ignore)
         losses = self.loss_by_feat(*loss_inputs)
 
         predictions = self.predict_by_feat(
