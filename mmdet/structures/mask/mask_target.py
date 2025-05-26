@@ -107,7 +107,7 @@ def mask_target_single(pos_proposals, pos_assigned_gt_inds, gt_masks, cfg):
     binarize = not cfg.get('soft_mask_target', False)
     num_pos = pos_proposals.size(0)
     if num_pos > 0:
-        proposals_np = pos_proposals.cpu().numpy()
+        proposals_np = pos_proposals.detach().cpu().numpy()
         maxh, maxw = gt_masks.height, gt_masks.width
         proposals_np[:, [0, 2]] = np.clip(proposals_np[:, [0, 2]], 0, maxw)
         proposals_np[:, [1, 3]] = np.clip(proposals_np[:, [1, 3]], 0, maxh)
