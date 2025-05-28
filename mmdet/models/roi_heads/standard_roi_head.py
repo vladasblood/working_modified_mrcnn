@@ -115,9 +115,11 @@ class StandardRoIHead(BaseRoIHead):
         num_imgs = len(batch_data_samples)
         sampling_results = []
         for i in range(num_imgs):
-            # rename rpn_results.bboxes to rpn_results.priors
             rpn_results = rpn_results_list[i]
             rpn_results.priors = rpn_results.pop('bboxes')
+            
+            # Fix: keep only 4 bbox coords, remove scores
+            rpn_results.priors = rpn_results.priors[:, :4]
 
             assign_result = self.bbox_assigner.assign(
                 rpn_results, batch_gt_instances[i],
