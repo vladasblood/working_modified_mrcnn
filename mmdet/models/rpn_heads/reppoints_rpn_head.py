@@ -25,7 +25,7 @@ class RepPointsRPNHead(RepPointsHead):
         )  
 
         return dict(
-            loss_rpn_cls=losses['rpn_loss_cls'],
+            loss_cls=losses['rpn_loss_cls'],
             loss_pts_init=losses['rpn_loss_pts_init'],
             loss_pts_refine=losses['rpn_loss_pts_refine'],
         ), proposal_list
