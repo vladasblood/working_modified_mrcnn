@@ -2,6 +2,7 @@
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+import copy
 import torch
 import torch.nn as nn
 from mmcv.cnn import ConvModule
@@ -12,6 +13,7 @@ from torch import Tensor
 from torchvision.ops import nms
 
 from mmdet.structures.bbox import HorizontalBoxes, BaseBoxes 
+from mmdet.structures import DetDataSample
 
 from mmdet.registry import MODELS, TASK_UTILS
 from mmdet.utils import ConfigType, InstanceList, MultiConfig, OptInstanceList
@@ -400,7 +402,7 @@ class RepPointsHead(AnchorFreeHead):
         if self.training:
             return cls_out, pts_out_init, pts_out_refine, bbox_out_init, bbox_out_refine
         else:
-            return torch.sigmoid(cls_out), pts_out_refine, bbox_out_init, bbox_out_refine
+            return torch.sigmoid(cls_out), pts_out_init, pts_out_refine, bbox_out_init, bbox_out_refine
 
         # THIS is WORKING
         # if self.training:
@@ -806,68 +808,6 @@ class RepPointsHead(AnchorFreeHead):
 
         return loss_cls, loss_pts_init, loss_pts_refine
 
-    # - WORKING BACK UP for loss_by_feat_single
-    #
-    # def loss_by_feat_single(self, cls_score, pts_pred_init, pts_pred_refine,
-    #                    bbox_pred_init, bbox_pred_refine, labels, label_weights,
-    #                    bbox_gt_init, bbox_weights_init, bbox_gt_refine,
-    #                    bbox_weights_refine, avg_factor_init, avg_factor_refine):
-    #     # Classification loss
-    #     cls_score = cls_score.permute(0, 2, 3, 1).reshape(-1, self.cls_out_channels)
-    #     labels = labels.reshape(-1)
-    #     label_weights = label_weights.reshape(-1)
-
-    #     # Ensure we have valid labels
-    #     valid_mask = labels >= 0
-    #     if not valid_mask.any():
-    #         return cls_score.sum() * 0, pts_pred_init.sum() * 0, pts_pred_refine.sum() * 0
-        
-    #     loss_cls = self.loss_cls(
-    #         cls_score[valid_mask],
-    #         labels[valid_mask],
-    #         label_weights[valid_mask],
-    #         avg_factor=max(1, valid_mask.sum()))
-        
-    #     # Regression losses
-    #     pts_pred_init = pts_pred_init.permute(0, 2, 3, 1).reshape(-1, 2 * self.num_points)
-    #     pts_pred_refine = pts_pred_refine.permute(0, 2, 3, 1).reshape(-1, 2 * self.num_points)
-
-    #     bbox_pred_init = self.points2bbox(pts_pred_init, y_first=False)
-    #     bbox_pred_refine = self.points2bbox(pts_pred_refine, y_first=False)
-
-    #     assert bbox_pred_init.shape[0] == labels.shape[0], \
-    #         f"Mismatch: bbox_pred_init={bbox_pred_init.shape}, labels={labels.shape}"
-        
-    #     bbox_gt_init = bbox_gt_init.reshape(-1, 4)
-    #     bbox_gt_refine = bbox_gt_refine.reshape(-1, 4)
-    #     bbox_weights_init = bbox_weights_init.reshape(-1, 4)
-    #     bbox_weights_refine = bbox_weights_refine.reshape(-1, 4)
-        
-    #     pos_inds = (labels >= 0) & (labels < self.num_classes)
-    #     num_pos = pos_inds.sum().item()
-        
-    #     if num_pos > 0:
-
-    #         pos_inds = pos_inds.nonzero(as_tuple=False).squeeze(1)
-
-    #         loss_pts_init = self.loss_bbox_init(
-    #             bbox_pred_init[pos_inds],
-    #             bbox_gt_init[pos_inds],
-    #             bbox_weights_init[pos_inds],
-    #             avg_factor=num_pos)
-            
-    #         loss_pts_refine = self.loss_bbox_refine(
-    #             bbox_pred_refine[pos_inds],
-    #             bbox_gt_refine[pos_inds],
-    #             bbox_weights_refine[pos_inds],
-    #             avg_factor=num_pos)
-    #     else:
-    #         loss_pts_init = bbox_pred_init.sum() * 0
-    #         loss_pts_refine = bbox_pred_refine.sum() * 0
-        
-    #     return loss_cls, loss_pts_init, loss_pts_refine
-
-
     def get_points(self, featmap_sizes, batch_input_shape=None, device=None, batch_size=1):
         points_list = []
         valid_flag_list = []
@@ -952,65 +892,6 @@ class RepPointsHead(AnchorFreeHead):
             'loss_pts_refine': losses_pts_refine
         }
         return loss_dict_all
-    
-    # - WORKING BACK UP for loss_by_feat
-    #
-    # def loss_by_feat(
-    #     self,
-    #     cls_scores: List[Tensor],
-    #     pts_preds_init: List[Tensor],
-    #     pts_preds_refine: List[Tensor],
-    #     bbox_preds_init: List[Tensor],
-    #     bbox_preds_refine: List[Tensor],
-    #     batch_gt_instances: InstanceList,
-    #     batch_img_metas: List[dict],
-    #     batch_gt_instances_ignore: OptInstanceList = None
-    # ) -> Dict[str, Tensor]:
-        
-    #     featmap_sizes = [featmap.size()[-2:] for featmap in cls_scores]
-    #     device = cls_scores[0].device
-    #     batch_size = len(batch_img_metas)
-        
-    #     # Get points for each level
-    #     points_list, valid_flag_list = self.get_points(
-    #         featmap_sizes, batch_img_metas[0]['batch_input_shape'], device, batch_size)
-        
-    #     (labels_list, label_weights_list, 
-    #     bbox_gt_init_list, bbox_weights_init_list,
-    #     bbox_gt_refine_list, bbox_weights_refine_list,
-    #     avg_factor_init, avg_factor_refine,
-    #     pos_inds_list, neg_inds_list) = self.get_targets(
-    #         points_list, valid_flag_list, batch_gt_instances, batch_img_metas,
-    #         batch_gt_instances_ignore)
-        
-    #     # Compute losses for each level separately
-    #     losses_cls, losses_pts_init, losses_pts_refine = multi_apply(
-    #         self.loss_by_feat_single,
-    #         cls_scores,
-    #         pts_preds_init,
-    #         pts_preds_refine,
-    #         bbox_preds_init,
-    #         bbox_preds_refine,
-    #         labels_list,
-    #         label_weights_list,
-    #         bbox_gt_init_list,
-    #         bbox_weights_init_list,
-    #         bbox_gt_refine_list,
-    #         bbox_weights_refine_list,
-    #         avg_factor_init=avg_factor_init,
-    #         avg_factor_refine=avg_factor_refine)
-        
-    #     loss_dict_all = {
-    #         'loss_cls': losses_cls,
-    #         'loss_pts_init': losses_pts_init,
-    #         'loss_pts_refine': losses_pts_refine
-    #     }
-    #     return loss_dict_all
-        
-        # return dict(
-        #     loss_cls=losses_cls,
-        #     loss_pts_init=losses_pts_init,
-        #     loss_pts_refine=losses_pts_refine)
     
     def get_proposals(self, cls_scores, bbox_preds, score_factors, img_metas, cfg):
         assert img_metas is not None, "img_metas must be provided"
@@ -1155,6 +1036,108 @@ class RepPointsHead(AnchorFreeHead):
         proposal_list = [InstanceData(bboxes=p) for p in proposal_list]
 
         return losses, proposal_list
+    
+    def predict(self, x, batch_img_metas, rescale=False):
+        # x: list of feature maps
+        # batch_img_metas: list of dicts (image info)
+
+        cls_scores, pts_preds_init, pts_preds_refine, bbox_preds_init, bbox_preds_refine = self.predict_raw(x)
+
+        results = self.predict_by_feat(
+            cls_scores=cls_scores,
+            pts_preds_refine=pts_preds_refine,
+            bbox_preds_init=bbox_preds_init,
+            batch_img_metas=batch_img_metas,
+            cfg=None,
+            rescale=rescale,
+            with_nms=True
+        )
+        return results
+
+    def predict_by_feat(self,
+                   cls_scores: List[Tensor],
+                   pts_preds_refine: List[Tensor],
+                   bbox_preds_init: List[Tensor],
+                   batch_img_metas: List[dict],
+                   cfg: Optional[ConfigDict] = None,
+                   rescale: bool = False,
+                   with_nms: bool = True) -> InstanceList:
+        """Transform a batch of output features into bbox results.
+
+        Args:
+            cls_scores (list[Tensor]): Classification scores for each scale level.
+            pts_preds_refine (list[Tensor]): Refined points predictions for each
+                scale level, each is a 4D-tensor, the channel number is
+                num_points * 2.
+            bbox_preds_init (list[Tensor]): Initial bbox predictions for each scale
+                level, each is a 4D-tensor, the channel number is num_points * 2.
+            batch_img_metas (list[dict]): Meta information of each image, e.g.,
+                image size, scaling factor, etc.
+            cfg (ConfigDict, optional): Test / postprocessing configuration.
+            rescale (bool): If True, return boxes in original image space.
+            with_nms (bool): If True, do nms before return boxes.
+
+        Returns:
+            list[:obj:`InstanceData`]: Object detection results of each image
+            after the post process. Each item usually contains following keys:
+                - scores (Tensor): Classification scores, has a shape
+                (num_instance,)
+                - labels (Tensor): Labels of bboxes, has a shape
+                (num_instance,)
+                - bboxes (Tensor): Has a shape (num_instance, 4),
+                the last dimension 4 arrange as (x1, y1, x2, y2).
+        """
+        assert len(cls_scores) == len(pts_preds_refine)
+        
+        # Get test config
+        cfg = self.test_cfg if cfg is None else cfg
+        cfg = copy.deepcopy(cfg)
+        
+        num_levels = len(cls_scores)
+        device = cls_scores[0].device
+        
+        # Convert points to priors (anchor points)
+        mlvl_priors = []
+        for i in range(num_levels):
+            stride = self.point_strides[i]
+            feat_h, feat_w = cls_scores[i].shape[-2:]
+            h_range = torch.arange(
+                0, feat_h, device=device, dtype=torch.float32) * stride + stride // 2
+            w_range = torch.arange(
+                0, feat_w, device=device, dtype=torch.float32) * stride + stride // 2
+            y, x = torch.meshgrid(h_range, w_range, indexing='ij')
+            prior = torch.stack([x, y], dim=-1).reshape(-1, 2)
+            mlvl_priors.append(prior)
+        
+        # Process each image in the batch
+        result_list = []
+        for img_id in range(len(batch_img_metas)):
+            img_meta = batch_img_metas[img_id]
+            #img_shape = img_meta['img_shape']
+
+            # Get single image predictions from all levels
+            cls_score_list = [
+                cls_scores[i][img_id].unsqueeze(0) for i in range(num_levels)
+            ]
+            bbox_pred_list = [
+                pts_preds_refine[i][img_id].unsqueeze(0) for i in range(num_levels)
+            ]
+            
+            # Process predictions for single image
+            results = self._predict_by_feat_single(
+                cls_score_list=cls_score_list,
+                bbox_pred_list=bbox_pred_list,
+                score_factor_list=None,
+                mlvl_priors=mlvl_priors,
+                img_meta=img_meta,
+                cfg=cfg,
+                rescale=rescale,
+                with_nms=with_nms)
+            
+            img_id = img_meta['metainfo']['img_id'] if 'metainfo' in img_meta and 'img_id' in img_meta['metainfo'] else -1
+            result_list.append(results) 
+        
+        return result_list
 
     # Same as base_dense_head/_get_bboxes_single except self._bbox_decode
     def _predict_by_feat_single(self,
@@ -1168,7 +1151,7 @@ class RepPointsHead(AnchorFreeHead):
                                 with_nms: bool = True) -> InstanceData:
         cfg = self.test_cfg if cfg is None else cfg
         assert len(cls_score_list) == len(bbox_pred_list)
-        img_shape = img_meta['img_shape']
+        img_shape = img_meta.metainfo['img_shape']
         nms_pre = cfg.get('nms_pre', -1)
 
         mlvl_bboxes = []
@@ -1176,45 +1159,48 @@ class RepPointsHead(AnchorFreeHead):
         mlvl_labels = []
         for level_idx, (cls_score, bbox_pred, priors) in enumerate(
                 zip(cls_score_list, bbox_pred_list, mlvl_priors)):
-            assert cls_score.size()[-2:] == bbox_pred.size()[-2:]
+
+            # If batch dim exists, remove it (assuming batch=1)
+            if cls_score.dim() == 4:
+                cls_score = cls_score.squeeze(0)  # (C, H, W)
+            if bbox_pred.dim() == 4:
+                bbox_pred = bbox_pred.squeeze(0)  # (C, H, W)
             
-            # print(f"[DEBUG] bbox_pred.shape = {bbox_pred.shape}")  # Should be (N, 18)
-            # print(f"[DEBUG] Trying to reshape to (-1, 9, 2)")
+            assert cls_score.size()[-2:] == bbox_pred.size()[-2:]
 
             C, H, W = bbox_pred.shape
+            
             bbox_pred = bbox_pred.permute(1, 2, 0).reshape(-1, C)
 
             cls_score = cls_score.permute(1, 2,0).reshape(-1, self.cls_out_channels)
-            
-            #print(f"[DEBUG] cls_score.shape = {cls_score.shape}")
-            
+
             if self.use_sigmoid_cls:
                 scores = cls_score.sigmoid()
             else:
                 scores = cls_score.softmax(-1)[:, :-1]
 
-            # After https://github.com/open-mmlab/mmdetection/pull/6268/,
-            # this operation keeps fewer bboxes under the same `nms_pre`.
-            # There is no difference in performance for most models. If you
-            # find a slight drop in performance, you can set a larger
-            # `nms_pre` than before.
             results = filter_scores_and_topk(
                 scores, cfg.score_thr, nms_pre,
                 dict(bbox_pred=bbox_pred, priors=priors))
             
-            # print(f"[DEBUG] Before filtering: scores={scores.shape}, bbox_pred={bbox_pred.shape}, priors={priors.shape}")
-
             scores, labels, _, filtered_results = results
 
             bbox_pred = filtered_results['bbox_pred']
             priors = filtered_results['priors']
 
-            # for lvl, pred in enumerate(bbox_pred):
-            #     print(f"Level {lvl} bbox_pred shape: {pred.shape}")  # Expect [B, 18, H, W]
+            min_len = min(bbox_pred.shape[0], priors.shape[0])
+            bbox_pred = bbox_pred[:min_len]
+            priors = priors[:min_len]
+
+            print("bbox_pred shape:", bbox_pred.shape)
+            print("priors shape:", priors.shape)
+
+            assert bbox_pred.shape[0] == priors.shape[0], \
+                f"Shape mismatch after filtering: bbox_pred {bbox_pred.shape}, priors {priors.shape}"
 
             bboxes = self._bbox_decode(priors, bbox_pred,
-                                       self.point_strides[level_idx],
-                                       img_shape)
+                                    self.point_strides[level_idx],
+                                    img_shape)
 
             mlvl_bboxes.append(bboxes)
             mlvl_scores.append(scores)
@@ -1234,44 +1220,38 @@ class RepPointsHead(AnchorFreeHead):
 
     def _bbox_decode(self, points: Tensor, bbox_pred: Tensor, stride: int,
                 max_shape: Tuple[int, int]) -> Tensor:
-        
-        # print(f'points sample: {points[:5]}')
-        # print(f'bbox_pred sample (first 5): {bbox_pred[:5]}')
-        # print(f'stride: {stride}')
-        # print(f'max_shape: {max_shape}')
-        
-        assert bbox_pred.shape[1] == 36
+        """
+        Decode 18-channel bbox prediction into horizontal bounding boxes.
 
-        # Reshape to (N, 9, 4) because 9 points × 4 distances
-        pred_distances = bbox_pred.view(-1, 9, 4)  # (N, 9, 4)
+        Args:
+            points (Tensor): Anchor points of shape (N, 2).
+            bbox_pred (Tensor): Predicted offsets of shape (N, 18).
+            stride (int): Stride of the feature map.
+            max_shape (tuple): Image shape (height, width).
 
+        Returns:
+            HorizontalBoxes: Decoded bounding boxes of shape (N, 4).
+        """
+        assert bbox_pred.shape[1] == 18, f"Expected 18 channels but got {bbox_pred.shape[1]}"
+
+        # Reshape to (N, 9, 2)
+        pred_offsets = bbox_pred.view(-1, 9, 2)  # (N, 9, 2)
+
+        # Compute absolute point coordinates
         x_centers = points[:, 0].unsqueeze(1)  # (N, 1)
         y_centers = points[:, 1].unsqueeze(1)  # (N, 1)
 
-        # Extract distances
-        left = pred_distances[:, :, 0] * stride
-        top = pred_distances[:, :, 1] * stride
-        right = pred_distances[:, :, 2] * stride
-        bottom = pred_distances[:, :, 3] * stride
+        x_offsets = pred_offsets[:, :, 0] * stride  # (N, 9)
+        y_offsets = pred_offsets[:, :, 1] * stride  # (N, 9)
 
-        # Convert distances to point bounding boxes for each point
-        x1 = x_centers - left  # (N, 9)
-        y1 = y_centers - top
-        x2 = x_centers + right
-        y2 = y_centers + bottom
+        x_coords = x_centers + x_offsets  # (N, 9)
+        y_coords = y_centers + y_offsets  # (N, 9)
 
-        # For each sample, take min x1, min y1, max x2, max y2 among 9 points
-        x_min, _ = x1.min(dim=1)
-        y_min, _ = y1.min(dim=1)
-        x_max, _ = x2.max(dim=1)
-        y_max, _ = y2.max(dim=1)
-
-        # Clamp to image boundaries
-        x_min = x_min.clamp(min=0, max=max_shape[1])
-        y_min = y_min.clamp(min=0, max=max_shape[0])
-        x_max = x_max.clamp(min=0, max=max_shape[1])
-        y_max = y_max.clamp(min=0, max=max_shape[0])
+        # Compute axis-aligned bbox that encloses all points
+        x_min = x_coords.min(dim=1).values.clamp(0, max_shape[1])
+        y_min = y_coords.min(dim=1).values.clamp(0, max_shape[0])
+        x_max = x_coords.max(dim=1).values.clamp(0, max_shape[1])
+        y_max = y_coords.max(dim=1).values.clamp(0, max_shape[0])
 
         decoded_bboxes = torch.stack([x_min, y_min, x_max, y_max], dim=-1)
-
         return HorizontalBoxes(decoded_bboxes)
