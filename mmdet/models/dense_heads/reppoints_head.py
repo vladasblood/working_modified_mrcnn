@@ -49,11 +49,7 @@ def multi_apply(func, *args, **kwargs):
         pfunc = lambda arg: func(*arg, **kwargs) if isinstance(arg, (tuple, list)) else func(arg, **kwargs)
         map_results = map(pfunc, zip(*args))
         results = tuple(map(list, zip(*map_results)))
-        
-        # print("[multi_apply] Outputs:")
-        # for i, res in enumerate(results):
-        #     print(f" - Result {i}: {[r.shape if isinstance(r, torch.Tensor) else type(r) for r in res]}")
-        
+    
         return results
 
 
@@ -91,7 +87,7 @@ class RepPointsHead(AnchorFreeHead):
                  point_feat_channels: int = 256,
                  num_points: int = 9,
                  gradient_mul: float = 0.1,
-                 point_strides: Sequence[int] = [8, 16, 32, 64, 128],
+                 point_strides: Sequence[int] = [8, 16, 32, 64],
                  point_base_scale: int = 4,
                  loss_cls: ConfigType = dict(
                      type='FocalLoss',
@@ -235,7 +231,7 @@ class RepPointsHead(AnchorFreeHead):
                                                   pts_out_dim, 1, 1, 0)
     
     def predict_raw(self, x):
-        out = multi_apply(self.forward_single, x)
+        out = multi_apply(self.forward_single, x, self.point_strides)
         return out
 
     def points2bbox(self, pts: Tensor, y_first: bool = True) -> Tensor:
@@ -322,7 +318,7 @@ class RepPointsHead(AnchorFreeHead):
         return grid_yx, regressed_bbox
 
     def forward(self, feats: Tuple[Tensor]) -> Tuple[Tensor]:
-        return multi_apply(self.forward_single, feats)
+        return multi_apply(self.forward_single, feats, self.point_strides) # pass strides
     
     def bbox_to_points(self, bbox: Tensor) -> Tensor:
         x1 = bbox[:, 0:1]  # (B, 1, H, W)
@@ -350,13 +346,13 @@ class RepPointsHead(AnchorFreeHead):
         points = torch.cat(grid_points, dim=1)  # (B, 36, H, W)
         return points
     
-    def forward_single(self, x: Tensor) -> Tuple[Tensor]:
+    def forward_single(self, x: Tensor, stride: int) -> Tuple[Tensor]:
         """Forward feature map of a single FPN level."""
         dcn_base_offset = self.dcn_base_offset.type_as(x)
 
         if self.use_grid_points or not self.center_init:
-            scale = self.point_base_scale / 16 # Reduced from /2 to /4 for smaller init boxes /8
-            points_init = dcn_base_offset / dcn_base_offset.max() * scale
+            scale = self.point_base_scale / 4 # Reduced from /2 to /4 for smaller init boxes /8 working
+            points_init = dcn_base_offset / dcn_base_offset.max() * scale * stride # remove if not working
             bbox_init = x.new_tensor([-scale, -scale, scale, scale]).view(1, 4, 1, 1)
         else:
             points_init = 0
@@ -773,8 +769,8 @@ class RepPointsHead(AnchorFreeHead):
         pts_pred_refine = pts_pred_refine.permute(0, 2, 3, 1).reshape(-1, 2 * self.num_points)
 
         # 🔥 Multiply by stride to scale to image space
-        pts_pred_init = pts_pred_init * stride / 4.0 # no divide
-        pts_pred_refine = pts_pred_refine * stride / 4.0 # no divide
+        pts_pred_init = pts_pred_init * stride # /4.0 # working
+        pts_pred_refine = pts_pred_refine * stride # /4.0 # working
 
         bbox_pred_init = self.points2bbox(pts_pred_init, y_first=False)
         bbox_pred_refine = self.points2bbox(pts_pred_refine, y_first=False)
