@@ -1192,8 +1192,8 @@ class RepPointsHead(AnchorFreeHead):
             bbox_pred = bbox_pred[:min_len]
             priors = priors[:min_len]
 
-            print("bbox_pred shape:", bbox_pred.shape)
-            print("priors shape:", priors.shape)
+            #print("bbox_pred shape:", bbox_pred.shape)
+            #print("priors shape:", priors.shape)
 
             assert bbox_pred.shape[0] == priors.shape[0], \
                 f"Shape mismatch after filtering: bbox_pred {bbox_pred.shape}, priors {priors.shape}"
