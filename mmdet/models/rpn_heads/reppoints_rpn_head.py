@@ -15,10 +15,10 @@ class RepPointsRPNHead(RepPointsHead):
     def __init__(self, *args, **kwargs):
         kwargs['num_classes'] = 1  # RPN is class-agnostic
         super().__init__(*args, **kwargs)
-
+    
     def loss_and_proposals(self, x, batch_data_samples, proposal_cfg):
 
-        losses, proposal_list = self.loss_by_feat(
+        losses, proposal_list = self.loss_and_predict(
             x,
             batch_data_samples,
             proposal_cfg=proposal_cfg
