@@ -215,54 +215,71 @@ class RepPointsHead(AnchorFreeHead):
         pts_out_dim = 2 * self.num_points
 
         self.reppoints_cls_conv = DeformConv2d(self.feat_channels,
-                                               self.point_feat_channels,
-                                               self.dcn_kernel, 1,
-                                               self.dcn_pad)
+                                                self.point_feat_channels,
+                                                self.dcn_kernel, 1,
+                                                self.dcn_pad)
         self.reppoints_cls_out = nn.Conv2d(self.point_feat_channels,
-                                           self.cls_out_channels, 1, 1, 0)
+                                            self.cls_out_channels, 1, 1, 0)
         self.reppoints_pts_init_conv = nn.Conv2d(self.feat_channels,
-                                                 self.point_feat_channels, 3,
-                                                 1, 1)
+                                                    self.point_feat_channels, 3,
+                                                    1, 1)
         self.reppoints_pts_init_out = nn.Conv2d(self.point_feat_channels,
                                                 pts_out_dim, 1, 1, 0)
         self.reppoints_pts_refine_conv = DeformConv2d(self.feat_channels,
-                                                      self.point_feat_channels,
-                                                      self.dcn_kernel, 1,
-                                                      self.dcn_pad)
+                                                        self.point_feat_channels,
+                                                        self.dcn_kernel, 1,
+                                                        self.dcn_pad)
         self.reppoints_pts_refine_out = nn.Conv2d(self.point_feat_channels,
-                                                  pts_out_dim, 1, 1, 0)
+                                                    pts_out_dim, 1, 1, 0)
     
     def predict_raw(self, x):
         out = multi_apply(self.forward_single, x, self.point_strides)
         return out
 
-    def points2bbox(self, pts: Tensor, y_first: bool = True) -> Tensor:
-        """Convert points to bbox with proper reshaping."""
+    def points2bbox(self, pts: Tensor, y_first: bool = True, method: str = None) -> Tensor:
+        """
+        Convert points to bbox using either 'minmax' or 'moment' method.
+        Args:
+            pts (Tensor): (N, num_points, 2)
+            y_first (bool): If True, first dim is y, else x.
+            method (str): 'minmax' or 'moment'. If None, use self.transform_method.
+        Returns:
+            Tensor: (N, 4) bounding boxes
+        """
         if pts.dim() == 2:
             pts = pts.unsqueeze(0)
-        
         pts = pts.view(-1, self.num_points, 2)
         pts_y = pts[:, :, 0] if y_first else pts[:, :, 1]
         pts_x = pts[:, :, 1] if y_first else pts[:, :, 0]
-        
-        if self.transform_method == 'moment':
+
+        use_method = method if method is not None else self.transform_method
+
+        if use_method == 'moment':
             pts_y_mean = pts_y.mean(dim=1, keepdim=True)
             pts_x_mean = pts_x.mean(dim=1, keepdim=True)
-            pts_y_std = torch.std(pts_y - pts_y_mean, dim=1, keepdim=True)
-            pts_x_std = torch.std(pts_x - pts_x_mean, dim=1, keepdim=True)
-            moment_transfer = (self.moment_transfer * self.moment_mul) + (
-                self.moment_transfer.detach() * (1 - self.moment_mul))
+            min_std = 1.0
+            pts_y_std = torch.std(pts_y - pts_y_mean, dim=1, keepdim=True).clamp(min_std)
+            pts_x_std = torch.std(pts_x - pts_x_mean, dim=1, keepdim=True).clamp(min_std)
+            moment_transfer = (self.moment_transfer * self.moment_mul +
+                               self.moment_transfer.detach() * (1 - self.moment_mul))
+            moment_transfer = torch.clamp(moment_transfer, -1.5, 1.5)
             half_width = pts_x_std * torch.exp(moment_transfer[0])
             half_height = pts_y_std * torch.exp(moment_transfer[1])
             bbox = torch.cat([
-                pts_x_mean - half_width, 
+                pts_x_mean - half_width,
                 pts_y_mean - half_height,
-                pts_x_mean + half_width, 
+                pts_x_mean + half_width,
                 pts_y_mean + half_height
             ], dim=1)
+        elif use_method == 'minmax':
+            x_min = pts_x.min(dim=1, keepdim=True).values
+            y_min = pts_y.min(dim=1, keepdim=True).values
+            x_max = pts_x.max(dim=1, keepdim=True).values
+            y_max = pts_y.max(dim=1, keepdim=True).values
+            bbox = torch.cat([x_min, y_min, x_max, y_max], dim=1)
         else:
-            raise NotImplementedError
-            
+            raise NotImplementedError(f"Unknown points2bbox method: {use_method}")
+
         return bbox.squeeze()
 
     def gen_grid_from_reg(self, reg: Tensor, previous_boxes: Tensor) -> Tuple[Tensor]:
@@ -494,6 +511,12 @@ class RepPointsHead(AnchorFreeHead):
         # Get valid proposals
         proposals = flat_proposals[inside_flags, :]
 
+        # ...inside _get_targets_single, after proposals = flat_proposals[inside_flags, :] ...
+        # if proposals.size(0) > 0 and hasattr(gt_instances, 'bboxes') and gt_instances.bboxes.shape[0] > 0:
+        #     print("[_get_targets_single] Sample prior bbox:", proposals[0].cpu().detach().numpy())
+        #     print("[_get_targets_single] Sample GT bbox:", gt_instances.bboxes[0].cpu().detach().numpy())
+        # ...rest of code...
+
         # Select assigner and pos_weight
         if stage == 'init':
             assigner = self.init_assigner
@@ -525,6 +548,8 @@ class RepPointsHead(AnchorFreeHead):
             stride_list = [torch.full((n,), s, device=points.device)
                         for s, n in zip(self.point_strides, num_points_per_level)]
             stride_tensor = torch.cat(stride_list, dim=0)
+
+            #print("[_get_targets_single] strides:", stride_list)
 
             assert stride_tensor.size(0) == points.size(0), "Stride tensor size mismatch"
 
@@ -565,6 +590,8 @@ class RepPointsHead(AnchorFreeHead):
         pos_inds = sampling_result.pos_inds
         neg_inds = sampling_result.neg_inds
 
+        #print(f"[assigner] num pos_inds: {len(pos_inds)}, num neg_inds: {len(neg_inds)}")
+
         # print("sampling_result.pos_inds:", sampling_result.pos_inds)
         # print("sampling_result.neg_inds:", sampling_result.neg_inds)
 
@@ -597,18 +624,10 @@ class RepPointsHead(AnchorFreeHead):
                 ret[inds, :] = data
             return ret
         
-        # print("labels before unmap:", labels.unique())
-        # print("pos_inds:", pos_inds)
-        # print("labels at pos_inds:", labels[pos_inds])
-        # print("inside_flags sum:", inside_flags.sum())
-
         if unmap_outputs:
             num_total = flat_proposals.size(0)
             inside_inds = inside_flags.nonzero(as_tuple=False).squeeze(1)
             # Ensure we preserve the positive labels
-
-            # print("inside_inds shape:", inside_inds.shape)
-            # print("pos_inds_unmapped:", inside_inds[pos_inds])
 
             # Unmap data first
             labels = unmap(labels, num_total, inside_flags, fill=-1)
@@ -621,26 +640,6 @@ class RepPointsHead(AnchorFreeHead):
             pos_inds_unmapped = inside_inds[pos_inds]
             neg_inds_unmapped = inside_inds[neg_inds]
             labels_unmapped = labels
-            # print("labels after unmap:", labels_unmapped.unique())
-            # print("labels at pos_inds_unmapped:", labels_unmapped[inside_inds[pos_inds]])
-
-            # print("labels at pos_inds after unmap:", labels[pos_inds_unmapped])
-            # print("bbox_gt at pos_inds after unmap:", bbox_gt[pos_inds_unmapped])
-
-            # print("== After unmap ==")
-            # print(f"labels shape: {labels.shape}, unique labels: {torch.unique(labels)}")
-            # print(f"label_weights shape: {label_weights.shape}, sum: {label_weights.sum()}")
-            # print(f"bbox_gt shape: {bbox_gt.shape}")
-            # print(f"bbox_gt sample (first 5): {bbox_gt[:5]}")
-            # print(f"pos_proposals shape: {pos_proposals.shape}")
-            # print(f"proposals_weights shape: {proposals_weights.shape}, sum: {proposals_weights.sum()}")
-
-        # print(f"flat_proposals shape: {flat_proposals.shape}")
-        # print(f"valid_flags shape: {valid_flags.shape}")
-        # print("inside_flags dtype:", inside_flags.dtype, "sum:", inside_flags.sum())
-        # print("inside_flags unique:", torch.unique(inside_flags))
-        # print(f"proposals shape: {proposals.shape}")
-        # print(f"assigner type: {type(assigner)}")
 
         return (labels, label_weights, bbox_gt, pos_proposals,
             proposals_weights, pos_inds_unmapped, neg_inds_unmapped, sampling_result)
@@ -666,27 +665,32 @@ class RepPointsHead(AnchorFreeHead):
         # For init stage, convert points to small boxes
         if stage == 'init':
             new_proposals_list = []
-            for points in proposals_list:
+            for img_idx, points in enumerate(proposals_list):
                 img_proposals = []
-                for lvl_points in points:
+                for lvl, lvl_points in enumerate(points):
                     if lvl_points.size(-1) > 2:
                         lvl_points = lvl_points[..., :2]
-                    scale = self.point_base_scale
-                    boxes = torch.cat([
-                        lvl_points - scale / 2,
-                        lvl_points + scale / 2
-                    ], dim=-1)
+                    stride = self.point_strides[lvl]
+                    scale = self.point_base_scale * stride  # <-- FIX HERE
+                    boxes = torch.cat([lvl_points - scale / 2, lvl_points + scale / 2], dim=-1)
                     img_proposals.append(boxes)
                 new_proposals_list.append(img_proposals)
             proposals_list = new_proposals_list
 
+
         if batch_gt_instances_ignore is None:
             batch_gt_instances_ignore = [None] * len(batch_img_metas)
 
+        # Save num_level_proposals BEFORE flattening
+        if num_level_proposals is None:
+            if isinstance(proposals_list[0], (list, tuple)):
+                num_level_proposals = [p.size(0) for p in proposals_list[0]]
+            else:
+                num_level_proposals = [proposals_list[0].size(0)]
+        # --- FIX END ---
+
         # --- FIX START ---
         # Flatten each image's proposals from list of levels into single tensor
-        # def concat_levels(img_level_list):
-        #     return [torch.cat(levels, dim=0) if isinstance(levels, (list, tuple)) else levels for levels in img_level_list]
         def concat_levels(img_level_list):
             if isinstance(img_level_list, (list, tuple)):
                 return torch.cat(img_level_list, dim=0)
@@ -696,7 +700,6 @@ class RepPointsHead(AnchorFreeHead):
         flat_valid_flag_list = [concat_levels(v) for v in valid_flag_list]
 
         # --- FIX END ---
-
         (all_labels, all_label_weights, all_bbox_gt, all_proposals,
         all_proposal_weights, pos_inds_list, neg_inds_list,
         sampling_results_list) = multi_apply(
@@ -711,46 +714,56 @@ class RepPointsHead(AnchorFreeHead):
         # print("Assigned GT counts per image:", [p.sum().item() for p in all_proposal_weights])
         # print("Nonzero bbox targets per image:", [torch.count_nonzero(b).item() for b in all_bbox_gt])
 
-        # Ensure num_level_proposals is known
-        if num_level_proposals is None:
-            if isinstance(proposals_list[0], (list, tuple)):
-                num_level_proposals = [p.size(0) for p in proposals_list[0]]
-            else:
-                num_level_proposals = [proposals_list[0].size(0)]
-
-        # --- FIX START ---
-        # Flatten all outputs per image before calling images_to_levels
-        def flatten_preds(per_img_list):
-            return [torch.cat(lvl_preds if isinstance(lvl_preds, (list, tuple)) else [lvl_preds]) for lvl_preds in per_img_list]
-
-        all_labels = flatten_preds(all_labels)
-        all_label_weights = flatten_preds(all_label_weights)
-        all_bbox_gt = flatten_preds(all_bbox_gt)
-        all_proposals = flatten_preds(all_proposals)
-        all_proposal_weights = flatten_preds(all_proposal_weights)
-        # --- FIX END ---
-
         # Convert per-image to per-level
-        labels_list = images_to_levels(all_labels, num_level_proposals)
-        label_weights_list = images_to_levels(all_label_weights, num_level_proposals)
-        bbox_gt_list = images_to_levels(all_bbox_gt, num_level_proposals)
-        bbox_weights_list = images_to_levels(all_proposal_weights, num_level_proposals)
-        proposals_list = images_to_levels(all_proposals, num_level_proposals)
+        # This will give you lists of length num_levels, each containing batch_size tensors
+        labels_list = []
+        label_weights_list = []
+        bbox_gt_init_list = []
+        bbox_weights_init_list = []
+
+        for lvl, n in enumerate(num_level_proposals):
+            # For each level, collect that slice from each image
+            lvl_labels = []
+            lvl_label_weights = []
+            lvl_bbox_gt = []
+            lvl_bbox_weights = []
+            start = sum(num_level_proposals[:lvl])
+            end = start + n
+            for img_idx in range(len(all_labels)):
+                lvl_labels.append(all_labels[img_idx][start:end])
+                lvl_label_weights.append(all_label_weights[img_idx][start:end])
+                lvl_bbox_gt.append(all_bbox_gt[img_idx][start:end])
+                lvl_bbox_weights.append(all_proposal_weights[img_idx][start:end])
+            labels_list.append(torch.cat(lvl_labels, dim=0))
+            label_weights_list.append(torch.cat(lvl_label_weights, dim=0))
+            bbox_gt_init_list.append(torch.cat(lvl_bbox_gt, dim=0))
+            bbox_weights_init_list.append(torch.cat(lvl_bbox_weights, dim=0))
+
+        bbox_gt_refine_list = bbox_gt_init_list
+        bbox_weights_refine_list = bbox_weights_init_list
+
+        # print("labels_list len:", len(labels_list))
+        # print("label_weights_list len:", len(label_weights_list))
+        # print("bbox_gt_init_list len:", len(bbox_gt_init_list))
 
         avg_factor_init = sum([res.avg_factor for res in sampling_results_list])
         avg_factor_refine = avg_factor_init
 
+        # Sanity check: print per-level GT bbox stats
+        # for lvl, bbox_gt in enumerate(bbox_gt_init_list):
+        #     print(f"[Sanity] Level {lvl} bbox_gt_init: shape={bbox_gt.shape}, nonzero={torch.count_nonzero(bbox_gt).item()}, first 3 rows:\n{bbox_gt[:3].cpu().numpy()}")
+
         return (labels_list, label_weights_list, 
-                bbox_gt_list, bbox_weights_list,
-                proposals_list, all_proposal_weights,
-                avg_factor_init, avg_factor_refine,
-                pos_inds_list, neg_inds_list)
+            bbox_gt_init_list, bbox_weights_init_list,
+            bbox_gt_refine_list, bbox_weights_refine_list,
+            avg_factor_init, avg_factor_refine,
+            pos_inds_list, neg_inds_list)
 
     def loss_by_feat_single(self, cls_score, pts_pred_init, pts_pred_refine,
-                        bbox_pred_init, bbox_pred_refine, labels, label_weights,
-                        bbox_gt_init, bbox_weights_init, bbox_gt_refine,
-                        bbox_weights_refine, avg_factor_init, avg_factor_refine,
-                        stride):  # <-- Add stride here
+                    bbox_pred_init, bbox_pred_refine, labels, label_weights,
+                    bbox_gt_init, bbox_weights_init, bbox_gt_refine,
+                    bbox_weights_refine, avg_factor_init, avg_factor_refine,
+                    stride, priors):
         # Classification loss
         cls_score = cls_score.permute(0, 2, 3, 1).reshape(-1, self.cls_out_channels)
         labels = labels.reshape(-1)
@@ -770,12 +783,14 @@ class RepPointsHead(AnchorFreeHead):
         pts_pred_init = pts_pred_init.permute(0, 2, 3, 1).reshape(-1, 2 * self.num_points)
         pts_pred_refine = pts_pred_refine.permute(0, 2, 3, 1).reshape(-1, 2 * self.num_points)
 
-        # 🔥 Multiply by stride to scale to image space
-        pts_pred_init = pts_pred_init * stride # /4.0 # working
-        pts_pred_refine = pts_pred_refine * stride # /4.0 # working
+        # 🔥 Convert offsets to absolute points using priors!
+        pts_pred_init = pts_pred_init.view(-1, self.num_points, 2)
+        pts_pred_refine = pts_pred_refine.view(-1, self.num_points, 2)
+        pts_abs_init = priors.unsqueeze(1) + pts_pred_init * stride  # [N, num_points, 2]
+        pts_abs_refine = priors.unsqueeze(1) + pts_pred_refine * stride
 
-        bbox_pred_init = self.points2bbox(pts_pred_init, y_first=False)
-        bbox_pred_refine = self.points2bbox(pts_pred_refine, y_first=False)
+        bbox_pred_init = self.points2bbox(pts_abs_init, y_first=False, method='minmax')
+        bbox_pred_refine = self.points2bbox(pts_abs_refine, y_first=False, method='minmax')
 
         assert bbox_pred_init.shape[0] == labels.shape[0], \
             f"Mismatch: bbox_pred_init={bbox_pred_init.shape}, labels={labels.shape}"
@@ -848,26 +863,43 @@ class RepPointsHead(AnchorFreeHead):
         batch_gt_instances: InstanceList,
         batch_img_metas: List[dict],
         batch_gt_instances_ignore: OptInstanceList = None
-    ) -> Dict[str, Tensor]:
-        
+        ) -> Dict[str, Tensor]:
         featmap_sizes = [featmap.size()[-2:] for featmap in cls_scores]
         device = cls_scores[0].device
         batch_size = len(batch_img_metas)
-        
-        # Get points for each level
+
+        # 1. Get points for each level: [num_levels][batch_size, N_lvl, ...]
         points_list, valid_flag_list = self.get_points(
             featmap_sizes, batch_img_metas[0]['batch_input_shape'], device, batch_size)
-        
+
+        # 2. Transpose to [batch_size][num_levels][N_lvl, ...]
+        points_list_per_img = []
+        valid_flag_list_per_img = []
+        num_levels = len(points_list)
+        for img_idx in range(batch_size):
+            points_per_img = [points_list[lvl][img_idx] for lvl in range(num_levels)]
+            flags_per_img = [valid_flag_list[lvl][img_idx] for lvl in range(num_levels)]
+            points_list_per_img.append(points_per_img)
+            valid_flag_list_per_img.append(flags_per_img)
+
+        # 3. Get targets (per-level lists)
         (labels_list, label_weights_list, 
         bbox_gt_init_list, bbox_weights_init_list,
         bbox_gt_refine_list, bbox_weights_refine_list,
         avg_factor_init, avg_factor_refine,
         pos_inds_list, neg_inds_list) = self.get_targets(
-            points_list, valid_flag_list, batch_gt_instances, batch_img_metas,
+            points_list_per_img, valid_flag_list_per_img, batch_gt_instances, batch_img_metas,
             batch_gt_instances_ignore)
-        
+
         strides = [self.point_strides[i] for i in range(len(cls_scores))]
-        # Compute losses for each level separately
+
+        # 4. Prepare priors for each level (concatenated for all images)
+        priors_list = []
+        for lvl in range(len(self.point_strides)):
+            lvl_priors = torch.cat([points_list_per_img[img_idx][lvl] for img_idx in range(batch_size)], dim=0)
+            priors_list.append(lvl_priors)
+
+        # 5. Compute losses for each level separately, passing priors
         losses_cls, losses_pts_init, losses_pts_refine = multi_apply(
             self.loss_by_feat_single,
             cls_scores,
@@ -883,9 +915,10 @@ class RepPointsHead(AnchorFreeHead):
             bbox_weights_refine_list,
             [avg_factor_init] * len(cls_scores),
             [avg_factor_refine] * len(cls_scores),
-            strides
+            strides,
+            priors_list  # <-- pass priors
         )
-        
+
         loss_dict_all = {
             'loss_cls': losses_cls,
             'loss_pts_init': losses_pts_init,
@@ -1013,13 +1046,6 @@ class RepPointsHead(AnchorFreeHead):
             batch_gt_instances,
             batch_img_metas
         )
-
-        # print("\n=== Loss breakdown ===")
-        # for k, v in losses.items():
-        #     if isinstance(v, torch.Tensor):
-        #         print(f"{k}: {v.item():.6f}")
-        #     else:
-        #         print(f"{k}: {v}")
 
         if proposal_cfg is None:
             raise ValueError("proposal_cfg must be provided")
